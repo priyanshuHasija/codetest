@@ -78,7 +78,7 @@
         c => struct(col(c).as("v"), lit(c).as("k")))
       val kpi_per_row = prc_each_factor.withColumn("kpi_per_row", greatest(structs: _*).getItem("k"))
 
-      val kpi_group = kpi_per_row.groupBy("Year", "Month", "DayOfMonth", "kpi_per_row").count().as("kpi_count")
+      val kpi_group = kpi_per_row.groupBy("Year", "Month", "DayOfMonth", "kpi_per_row").count().withColumnRenamed("count","kpi_count")
       val kpi_group2 = kpi_group.groupBy("Year", "Month", "DayOfMonth").agg(max(col("kpi_count")).as("max_kpi_value"))
 
       val final_kpi = kpi_group.join(kpi_group2, kpi_group("Year") <=> kpi_group2("Year") && kpi_group("Month") <=> kpi_group2("Month") && kpi_group("DayOfMonth") <=> kpi_group2("DayOfMonth") && kpi_group("kpi_count") <=> kpi_group2("max_kpi_value")).select(kpi_group("*"))
@@ -93,9 +93,15 @@
       val table_name = "flight_data"
       val username = "admin"
       val password = "admin123"
-      val loaded_data = spark.read.format("com.microsoft.sqlserver.jdbc.spark").option("url", url).option("dbtable", table_name).option("user", username).option("password", password).load()
+      val loaded_data = spark.read.format("com.microsoft.sqlserver.jdbc.spark")
+        .option("url", url).option("dbtable", table_name)
+        .option("user", username).option("password", password)
+        .load()
+        .select("Year","Month","DayOfMonth","cancelled_flights","diverted_flights","kpi","StartPeriod",
+        "EndpEriod","LoadDateTime")
 
       //Upsert operation
+      // records that are updated inside incoming data
       val final_data_temp1 = loaded_data.join(final_kpi_with_cancelled_diverted,
         loaded_data("StartPeriod") <=> final_kpi_with_cancelled_diverted("StartPeriod")
           && loaded_data("EndPeriod") <=> final_kpi_with_cancelled_diverted("EndPeriod")
@@ -103,13 +109,22 @@
           && loaded_data("Diverted") =!= final_kpi_with_cancelled_diverted("Diverted")
           && loaded_data("kpi") =!= final_kpi_with_cancelled_diverted("kpi")
       ).select(final_kpi_with_cancelled_diverted("*"))
+
+      // records that are new inside incoming data
       val final_data_temp2 = loaded_data.join(final_kpi_with_cancelled_diverted,
         loaded_data("StartPeriod") =!= final_kpi_with_cancelled_diverted("StartPeriod")
           && loaded_data("EndPeriod") =!= final_kpi_with_cancelled_diverted("EndPeriod")
       ).select(final_kpi_with_cancelled_diverted("*"))
-      val final_data = final_data_temp1.union(final_data_temp2)
 
-      final_data.write.format("com.microsoft.sqlserver.jdbc.spark").mode("overwrite").option("url", url).option("dbtable", table_name).option("user", username).option("password", password).save()
+      // records that are not part of incoming data
+      val final_data_temp3 = loaded_data.join(final_data_temp1,
+        loaded_data("StartPeriod") =!= final_data_temp1("StartPeriod")
+          && loaded_data("EndPeriod") =!= final_data_temp1("EndPeriod")
+      ).select(loaded_data("*"))
+      val final_data = final_data_temp3.union(final_data_temp1).union(final_data_temp2)
+
+      final_data.write.format("com.microsoft.sqlserver.jdbc.spark").mode("overwrite").option("url", url)
+        .option("dbtable",table_name).option("user", username).option("password", password).save()
     }
   }
 
